@@ -66,3 +66,149 @@ func NewOrderBook() *OrderBook {
 		Asks: make(map[uint64]*PriceLevel),
 	}
 }
+
+// ProcessOrder processes an incoming order against the book, executing trades
+// immediately if a match is found, or queuing the remainder on its price shelf.
+func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
+	var trades []*TradeExecution
+
+	// Case A: Incoming Order is a BUY order
+	if incoming.IsBuy {
+		// Keep matching as long as there are shares left AND there is a seller willing to meet the price
+		for incoming.Quantity > 0 && ob.BestAsk != 0 && incoming.Price >= ob.BestAsk {
+			askLevel := ob.Asks[ob.BestAsk]
+			currentNode := askLevel.Head
+
+			// Walk down the linked list queue at this specific price shelf
+			for currentNode != nil && incoming.Quantity > 0 {
+				restingOrder := currentNode.Value
+
+				// Determine execution quantity (the maximum available match amount)
+				matchQty := incoming.Quantity
+				if restingOrder.Quantity < matchQty {
+					matchQty = restingOrder.Quantity
+				}
+
+				// Deduct stock balances
+				incoming.Quantity -= matchQty
+				restingOrder.Quantity -= matchQty
+
+				// Generate the trade receipt
+				trades = append(trades, &TradeExecution{
+					BuyOrderID:  incoming.ID,
+					SellOrderID: restingOrder.ID,
+					Price:       ob.BestAsk, // Price matches the existing resting order
+					Quantity:    matchQty,
+					Symbol:      incoming.Symbol,
+				})
+
+				// If the resting order is entirely filled, pop it out of our linked list
+				if restingOrder.Quantity == 0 {
+					askLevel.Head = currentNode.Next
+					if askLevel.Head != nil {
+						askLevel.Head.Prev = nil
+					} else {
+						askLevel.Tail = nil // The shelf is completely empty of orders
+					}
+				}
+				currentNode = askLevel.Head
+			}
+
+			// If the entire price shelf was cleared out, remove it from our map and find the next best price
+			if askLevel.Head == nil {
+				delete(ob.Asks, ob.BestAsk)
+				ob.recalculateBestAsk()
+			}
+		}
+
+		// If the incoming buy order still has remaining shares left after matching, shelf it
+		if incoming.Quantity > 0 {
+			shelf, exists := ob.Bids[incoming.Price]
+			if !exists {
+				shelf = &PriceLevel{Price: incoming.Price}
+				ob.Bids[incoming.Price] = shelf
+			}
+			shelf.AppendOrder(incoming)
+			if incoming.Price > ob.BestBid {
+				ob.BestBid = incoming.Price
+			}
+		}
+
+	} else {
+		// Case B: Incoming Order is a SELL order (Mirrors the Buy logic perfectly)
+		for incoming.Quantity > 0 && ob.BestBid != 0 && incoming.Price <= ob.BestBid {
+			bidLevel := ob.Bids[ob.BestBid]
+			currentNode := bidLevel.Head
+
+			for currentNode != nil && incoming.Quantity > 0 {
+				restingOrder := currentNode.Value
+
+				matchQty := incoming.Quantity
+				if restingOrder.Quantity < matchQty {
+					matchQty = restingOrder.Quantity
+				}
+
+				incoming.Quantity -= matchQty
+				restingOrder.Quantity -= matchQty
+
+				trades = append(trades, &TradeExecution{
+					BuyOrderID:  restingOrder.ID,
+					SellOrderID: incoming.ID,
+					Price:       ob.BestBid,
+					Quantity:    matchQty,
+					Symbol:      incoming.Symbol,
+				})
+
+				if restingOrder.Quantity == 0 {
+					bidLevel.Head = currentNode.Next
+					if bidLevel.Head != nil {
+						bidLevel.Head.Prev = nil
+					} else {
+						bidLevel.Tail = nil
+					}
+				}
+				currentNode = bidLevel.Head
+			}
+
+			if bidLevel.Head == nil {
+				delete(ob.Bids, ob.BestBid)
+				ob.recalculateBestBid()
+			}
+		}
+
+		if incoming.Quantity > 0 {
+			shelf, exists := ob.Asks[incoming.Price]
+			if !exists {
+				shelf = &PriceLevel{Price: incoming.Price}
+				ob.Asks[incoming.Price] = shelf
+			}
+			shelf.AppendOrder(incoming)
+			if ob.BestAsk == 0 || incoming.Price < ob.BestAsk {
+				ob.BestAsk = incoming.Price
+			}
+		}
+	}
+
+	return trades
+}
+
+// Helper methods to dynamically scan boundaries when a price shelf is completely wiped out.
+func (ob *OrderBook) recalculateBestBid() {
+	var max uint64
+	for price := range ob.Bids {
+		if price > max {
+			max = price
+		}
+	}
+	ob.BestBid = max
+}
+
+func (ob *OrderBook) recalculateBestAsk() {
+	var min uint64 = 0
+	for price := range ob.Asks {
+		if min == 0 || price < min {
+			min = price
+		}
+	}
+	ob.BestAsk = min
+}
