@@ -41,3 +41,17 @@ func (pl *PriceLevel) AppendOrder(order *Order) *OrderNode {
 	}
 	return newNode
 }
+
+// OrderBook manages all Buy and Sell price levels for an asset.
+type OrderBook struct {
+	Bids map[uint64]*PriceLevel // Buy orders: mapped by Price -> PriceLevel
+	Asks map[uint64]*PriceLevel // Sell orders: mapped by Price -> PriceLevel
+}
+
+// NewOrderBook allocates memory and instantiates a clean, functional order book.
+func NewOrderBook() *OrderBook {
+	return &OrderBook{
+		Bids: make(map[uint64]*PriceLevel),
+		Asks: make(map[uint64]*PriceLevel),
+	}
+}
