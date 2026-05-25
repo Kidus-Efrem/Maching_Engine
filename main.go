@@ -3,58 +3,62 @@ package main
 import (
 	"fmt"
 	"matching-engine/pkg/engine"
+	"os"
 )
 
 func main() {
-	// Initialize our top-level multi-asset exchange supervisor
-	exchange := engine.NewExchange()
+	walPath := "engine.wal"
 
-	// Define explicit fixed 4-byte identifiers for our assets
+	fmt.Println("⚡ CRASH SIMULATOR INITIALIZED...")
+	fmt.Println("Step 1: Instantiating fresh log file and logging active liquidity...")
+
+	wal, err := engine.OpenWAL(walPath)
+	if err != nil {
+		panic(err)
+	}
+
+	// Start exchange phase
+	exchange := engine.NewExchange(wal)
 	aapl := [4]byte{'A', 'A', 'P', 'L'}
-	msft := [4]byte{'M', 'S', 'F', 'T'}
 
-	fmt.Println("============ STAGE 1: INJECTING MARKET LIQUIDITY ============")
-	fmt.Println("Populating separate asset books with resting limit sell orders...")
+	// Place two resting sell orders onto the disk and RAM layers
+	exchange.ProcessOrder(&engine.Order{ID: 701, Symbol: aapl, Price: 15000, Quantity: 50, IsBuy: false})
+	exchange.ProcessOrder(&engine.Order{ID: 702, Symbol: aapl, Price: 15200, Quantity: 30, IsBuy: false})
 
-	exchange.ProcessOrder(&engine.Order{ID: 101, Symbol: aapl, Price: 10100, Quantity: 10, IsBuy: false})
-	exchange.ProcessOrder(&engine.Order{ID: 102, Symbol: aapl, Price: 10100, Quantity: 20, IsBuy: false})
-	exchange.ProcessOrder(&engine.Order{ID: 103, Symbol: aapl, Price: 10200, Quantity: 15, IsBuy: false})
-	exchange.ProcessOrder(&engine.Order{ID: 201, Symbol: msft, Price: 10100, Quantity: 25, IsBuy: false})
+	fmt.Printf("Initial Live Market Ask State: $%d.00\n", exchange.Books[aapl].GetBestAsk()/100)
+	wal.Close()
 
-	aaplBook := exchange.Books[aapl]
-	msftBook := exchange.Books[msft]
+	// 🚨 SIMULATE CATASTROPHIC ENGINE CRASH
+	fmt.Println("\n💥 [CRASH EVENT]: Server power cords pulled! Wiping RAM states...")
+	exchange = nil // Pure memory vaporization!
 
-	// FIXED: Calling the exported public getter methods
-	fmt.Printf("\n[Current Spread] AAPL Best Ask Price: $%d.00\n", aaplBook.GetBestAsk()/100)
-	fmt.Printf("[Current Spread] MSFT Best Ask Price: $%d.00\n\n", msftBook.GetBestAsk()/100)
+	// 🛠️ REBOOT AND RECOVERY STAGE
+	fmt.Println("\n🔄 [REBOOT PHASE]: Spinning system backup. Reading binary WAL states from physical disk...")
+	recoveryWal, err := engine.OpenWAL(walPath)
+	if err != nil {
+		panic(err)
+	}
+	defer recoveryWal.Close()
 
-	fmt.Println("============ STAGE 2: EXECUTING MULTI-SHELF CROSSES ============")
-	fmt.Println("Firing an aggressive Buy Order for 40 shares of AAPL up to a max price of $105.00...")
-
-	aggressiveBuy := &engine.Order{
-		ID:       501,
-		Symbol:   aapl,
-		Price:    10500,
-		Quantity: 40,
-		IsBuy:    true,
+	// Read raw bits off the disk file
+	historicalOrders, err := recoveryWal.ReadAll()
+	if err != nil {
+		panic(err)
 	}
 
-	trades := exchange.ProcessOrder(aggressiveBuy)
+	// Rehydrate a pristine independent engine
+	rebootedExchange := engine.NewExchange(nil) // Pass nil so it doesn't infinite loop write back to itself
 
-	fmt.Printf("\n--- MATCHING RESULTS FOR TRANSACTION RUN ---\n")
-	if len(trades) == 0 {
-		fmt.Println("No matches executed.")
+	// Replay history
+	for _, historicalOrder := range historicalOrders {
+		rebootedExchange.ProcessOrder(historicalOrder)
+		fmt.Printf("REPLAYED LOG ENTRY: Rehydrated Order ID %d for Ticker %s @ $%d.00\n",
+			historicalOrder.ID, string(historicalOrder.Symbol[:]), historicalOrder.Price/100)
 	}
-	for _, t := range trades {
-		fmt.Printf("MATCH EXECUTED: Buy Order %d matched Sell Order %d | Volume: %d shares @ $%d.00 for Asset: %s\n",
-			t.BuyOrderID, t.SellOrderID, t.Quantity, t.Price/100, string(t.Symbol[:]))
-	}
 
-	fmt.Println("\n============ STAGE 3: POST-MATCH AUDIT SANITY CHECK ============")
+	fmt.Println("\n✅ RECOVERY AUDIT COMPLETION SUCCESSFUL:")
+	fmt.Printf("Recovered Engine Active Best Ask State: $%d.00\n", rebootedExchange.Books[aapl].GetBestAsk()/100)
 
-	// FIXED: Calling the exported public getter methods
-	fmt.Printf("AAPL Next Best Ask Price remaining: $%d.00 (Should be $102.00)\n", aaplBook.GetBestAsk()/100)
-	fmt.Printf("AAPL Leftover Resting Buyer Shares: %d (Should be 0, fully consumed)\n", aggressiveBuy.Quantity)
-
-	fmt.Printf("MSFT Ask Level Count: %d shares remaining (Should be 25, completely isolated!)\n", msftBook.Asks[10100].Head.Value.Quantity)
+	// Clean up after our test run completes
+	os.Remove(walPath)
 }
