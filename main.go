@@ -3,62 +3,40 @@ package main
 import (
 	"fmt"
 	"matching-engine/pkg/engine"
-	"os"
 )
 
 func main() {
-	walPath := "engine.wal"
+	// Initialize our Risk Engine and set up a trader profile
+	riskGate := engine.NewRiskEngine()
+	traderAccountID := uint64(42)
 
-	fmt.Println("⚡ CRASH SIMULATOR INITIALIZED...")
-	fmt.Println("Step 1: Instantiating fresh log file and logging active liquidity...")
-
-	wal, err := engine.OpenWAL(walPath)
-	if err != nil {
-		panic(err)
+	riskGate.Accounts[traderAccountID] = &engine.AccountState{
+		AccountID:         traderAccountID,
+		AvailableBalance:  500000, // $5,000.00 scaled cash capital
+		ActiveMaxPosition: 1000,   // Cannot buy/sell more than 1,000 shares at once
 	}
 
-	// Start exchange phase
-	exchange := engine.NewExchange(wal)
+	// Initialize Exchange passing our Risk gatekeeper
+	exchange := engine.NewExchange(nil, riskGate)
 	aapl := [4]byte{'A', 'A', 'P', 'L'}
 
-	// Place two resting sell orders onto the disk and RAM layers
-	exchange.ProcessOrder(&engine.Order{ID: 701, Symbol: aapl, Price: 15000, Quantity: 50, IsBuy: false})
-	exchange.ProcessOrder(&engine.Order{ID: 702, Symbol: aapl, Price: 15200, Quantity: 30, IsBuy: false})
+	fmt.Println("🚀 Case 1: Submitting a valid order within the trader's budget limits...")
+	validOrder := &engine.Order{ID: 1, Symbol: aapl, Price: 10000, Quantity: 10, IsBuy: true} // Cost: $1,000.00
 
-	fmt.Printf("Initial Live Market Ask State: $%d.00\n", exchange.Books[aapl].GetBestAsk()/100)
-	wal.Close()
-
-	// 🚨 SIMULATE CATASTROPHIC ENGINE CRASH
-	fmt.Println("\n💥 [CRASH EVENT]: Server power cords pulled! Wiping RAM states...")
-	exchange = nil // Pure memory vaporization!
-
-	// 🛠️ REBOOT AND RECOVERY STAGE
-	fmt.Println("\n🔄 [REBOOT PHASE]: Spinning system backup. Reading binary WAL states from physical disk...")
-	recoveryWal, err := engine.OpenWAL(walPath)
+	_, err := exchange.ProcessOrder(validOrder, traderAccountID)
 	if err != nil {
-		panic(err)
+		fmt.Printf("❌ Unexpected Failure: %v\n", err)
+	} else {
+		fmt.Println("✅ Success: Order passed risk validation and was queued into the matching engine!")
 	}
-	defer recoveryWal.Close()
 
-	// Read raw bits off the disk file
-	historicalOrders, err := recoveryWal.ReadAll()
+	fmt.Println("\n⚡ Case 2: Submitting an invalid order that exceeds available credit balance...")
+	expensiveOrder := &engine.Order{ID: 2, Symbol: aapl, Price: 10000, Quantity: 60, IsBuy: true} // Cost: $6,000.00 (Exceeds $5k balance)
+
+	_, err = exchange.ProcessOrder(expensiveOrder, traderAccountID)
 	if err != nil {
-		panic(err)
+		fmt.Printf("🛡️ RISK INTERCEPTION: %v (Successfully Blocked!)\n", err)
+	} else {
+		fmt.Println("❌ Failure: System allowed an illegal over-leveraged trade to pass through!")
 	}
-
-	// Rehydrate a pristine independent engine
-	rebootedExchange := engine.NewExchange(nil) // Pass nil so it doesn't infinite loop write back to itself
-
-	// Replay history
-	for _, historicalOrder := range historicalOrders {
-		rebootedExchange.ProcessOrder(historicalOrder)
-		fmt.Printf("REPLAYED LOG ENTRY: Rehydrated Order ID %d for Ticker %s @ $%d.00\n",
-			historicalOrder.ID, string(historicalOrder.Symbol[:]), historicalOrder.Price/100)
-	}
-
-	fmt.Println("\n✅ RECOVERY AUDIT COMPLETION SUCCESSFUL:")
-	fmt.Printf("Recovered Engine Active Best Ask State: $%d.00\n", rebootedExchange.Books[aapl].GetBestAsk()/100)
-
-	// Clean up after our test run completes
-	os.Remove(walPath)
 }
