@@ -251,36 +251,46 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 
 	return trades
 }
-
 // ============================================================================
-// 5. THE MULTI-ASSET EXCHANGE REGISTRY (UPDATED WITH WAL)
+// 5. THE MULTI-ASSET EXCHANGE REGISTRY (UPDATED WITH RISK & WAL)
 // ============================================================================
 
 type Exchange struct {
 	Books map[[4]byte]*OrderBook
-	Wal   *WAL // Our persistence channel
+	Wal   *WAL
+	Risk  *RiskEngine // Embedded Pre-Trade Risk Gatekeeper
 }
 
-func NewExchange(walInstance *WAL) *Exchange {
+func NewExchange(walInstance *WAL, riskInstance *RiskEngine) *Exchange {
 	return &Exchange{
 		Books: make(map[[4]byte]*OrderBook),
 		Wal:   walInstance,
+		Risk:  riskInstance,
 	}
 }
 
-func (e *Exchange) ProcessOrder(incoming *Order) []*TradeExecution {
-	// CRITICAL SYSTEM CORE: Log the intent to disk BEFORE modifying RAM books!
+// ProcessOrder routes an order through the complete enterprise execution pipeline:
+// Risk Check -> WAL Log -> Matching Engine Engine Loops.
+func (e *Exchange) ProcessOrder(incoming *Order, accountID uint64) ([]*TradeExecution, error) {
+	// GATE 1: Pre-Trade Risk Validation
+	if e.Risk != nil {
+		if err := e.Risk.EvaluateOrder(incoming, accountID); err != nil {
+			return nil, err // Return the risk rejection error to the client immediately
+		}
+	}
+
+	// GATE 2: Core Persistence Logging
 	if e.Wal != nil {
 		if err := e.Wal.WriteOrder(incoming); err != nil {
-			// System fault panic if storage media becomes corrupted or unwritable
 			panic("WAL CRITICAL FAILURE: Unable to persist transaction state: " + err.Error())
 		}
 	}
 
+	// GATE 3: In-Memory Matching Book Execution
 	book, exists := e.Books[incoming.Symbol]
 	if !exists {
 		book = NewOrderBook()
 		e.Books[incoming.Symbol] = book
 	}
-	return book.ProcessOrder(incoming)
+	return book.ProcessOrder(incoming), nil
 }
