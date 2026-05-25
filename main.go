@@ -6,44 +6,55 @@ import (
 )
 
 func main() {
-	// Initialize our multi-asset exchange supervisor
+	// Initialize our top-level multi-asset exchange supervisor
 	exchange := engine.NewExchange()
 
+	// Define explicit fixed 4-byte identifiers for our assets
 	aapl := [4]byte{'A', 'A', 'P', 'L'}
 	msft := [4]byte{'M', 'S', 'F', 'T'}
 
-	fmt.Println("🚀 Loading market data with overlapping prices across different symbols...")
+	fmt.Println("============ STAGE 1: INJECTING MARKET LIQUIDITY ============")
+	fmt.Println("Populating separate asset books with resting limit sell orders...")
 
-	// 1. Place a resting Sell Order for AAPL at $150
-	exchange.ProcessOrder(&engine.Order{ID: 1, Symbol: aapl, Price: 15000, Quantity: 10, IsBuy: false})
+	exchange.ProcessOrder(&engine.Order{ID: 101, Symbol: aapl, Price: 10100, Quantity: 10, IsBuy: false})
+	exchange.ProcessOrder(&engine.Order{ID: 102, Symbol: aapl, Price: 10100, Quantity: 20, IsBuy: false})
+	exchange.ProcessOrder(&engine.Order{ID: 103, Symbol: aapl, Price: 10200, Quantity: 15, IsBuy: false})
+	exchange.ProcessOrder(&engine.Order{ID: 201, Symbol: msft, Price: 10100, Quantity: 25, IsBuy: false})
 
-	// 2. Place a resting Sell Order for MSFT at the EXACT SAME price ($150)
-	exchange.ProcessOrder(&engine.Order{ID: 2, Symbol: msft, Price: 15000, Quantity: 20, IsBuy: false})
+	aaplBook := exchange.Books[aapl]
+	msftBook := exchange.Books[msft]
 
-	fmt.Println("⚡ Firing an aggressive Buyer who wants AAPL at $150...")
+	// FIXED: Calling the exported public getter methods
+	fmt.Printf("\n[Current Spread] AAPL Best Ask Price: $%d.00\n", aaplBook.GetBestAsk()/100)
+	fmt.Printf("[Current Spread] MSFT Best Ask Price: $%d.00\n\n", msftBook.GetBestAsk()/100)
 
-	// 3. Buyer wants AAPL at $150. This should ONLY match with Order 1 (AAPL), completely ignoring Order 2 (MSFT).
-	buyerOrder := &engine.Order{
-		ID:       999,
+	fmt.Println("============ STAGE 2: EXECUTING MULTI-SHELF CROSSES ============")
+	fmt.Println("Firing an aggressive Buy Order for 40 shares of AAPL up to a max price of $105.00...")
+
+	aggressiveBuy := &engine.Order{
+		ID:       501,
 		Symbol:   aapl,
-		Price:    15000,
-		Quantity: 10,
+		Price:    10500,
+		Quantity: 40,
 		IsBuy:    true,
 	}
 
-	trades := exchange.ProcessOrder(buyerOrder)
+	trades := exchange.ProcessOrder(aggressiveBuy)
 
-	fmt.Printf("\n--- MATCHING RESULTS FOR %s ---\n", string(buyerOrder.Symbol[:]))
+	fmt.Printf("\n--- MATCHING RESULTS FOR TRANSACTION RUN ---\n")
 	if len(trades) == 0 {
-		fmt.Println("No matches found.")
+		fmt.Println("No matches executed.")
 	}
 	for _, t := range trades {
-		fmt.Printf("SUCCESS: Matched Buy %d with Sell %d | Qty: %d @ $%d for Asset: %s\n",
+		fmt.Printf("MATCH EXECUTED: Buy Order %d matched Sell Order %d | Volume: %d shares @ $%d.00 for Asset: %s\n",
 			t.BuyOrderID, t.SellOrderID, t.Quantity, t.Price/100, string(t.Symbol[:]))
 	}
 
-	// Verify MSFT book still contains its resting seller intact
-	msftBook := exchange.Books[msft]
-	fmt.Printf("\n--- SAFETY SANITY CHECK ---\n")
-	fmt.Printf("MSFT Active Best Ask Price: $%d (Should still be $150)\n", msftBook.AskHeap.prices[0]/100)
+	fmt.Println("\n============ STAGE 3: POST-MATCH AUDIT SANITY CHECK ============")
+
+	// FIXED: Calling the exported public getter methods
+	fmt.Printf("AAPL Next Best Ask Price remaining: $%d.00 (Should be $102.00)\n", aaplBook.GetBestAsk()/100)
+	fmt.Printf("AAPL Leftover Resting Buyer Shares: %d (Should be 0, fully consumed)\n", aggressiveBuy.Quantity)
+
+	fmt.Printf("MSFT Ask Level Count: %d shares remaining (Should be 25, completely isolated!)\n", msftBook.Asks[10100].Head.Value.Quantity)
 }

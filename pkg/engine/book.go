@@ -9,8 +9,6 @@ import (
 // ============================================================================
 
 // Order represents a user's request to buy or sell a specific security.
-// To maximize CPU cache efficiency and avoid heavy garbage collection overhead,
-// we completely avoid strings and pointers within our core data layout.
 type Order struct {
 	ID       uint64  // Unique identifier for the order
 	Symbol   [4]byte // Fixed 4-byte array (e.g., 'A','A','P','L') preventing heap-allocation
@@ -20,7 +18,6 @@ type Order struct {
 }
 
 // OrderNode wraps our Order struct inside an intrusive Doubly Linked List node.
-// This allows true O(1) pointer-level manipulation across the memory space.
 type OrderNode struct {
 	Value *Order     // Pointer to the underlying order data
 	Prev  *OrderNode // Pointer to the order ahead of this one in the queue line
@@ -35,7 +32,6 @@ type PriceLevel struct {
 }
 
 // AppendOrder places an incoming order at the absolute tail of this shelf line.
-// This operation guarantees strict O(1) time complexity.
 func (pl *PriceLevel) AppendOrder(order *Order) *OrderNode {
 	newNode := &OrderNode{Value: order}
 
@@ -51,7 +47,6 @@ func (pl *PriceLevel) AppendOrder(order *Order) *OrderNode {
 }
 
 // TradeExecution represents a finalized binding match between a buyer and a seller.
-// These records are blasted down the network pipeline to update terminal clients.
 type TradeExecution struct {
 	BuyOrderID  uint64   // Tracking ID of the buyer
 	SellOrderID uint64   // Tracking ID of the seller
@@ -65,7 +60,6 @@ type TradeExecution struct {
 // ============================================================================
 
 // PriceHeap implements the container/heap interface to manage active price keys.
-// It bypasses O(N) map scanning, bringing price discovery down to O(log M).
 type PriceHeap struct {
 	prices []uint64
 	isMin  bool // True for Asks (lowest price priority), False for Bids (highest price priority)
@@ -83,9 +77,9 @@ func (h *PriceHeap) Pop() interface{} {
 }
 func (h *PriceHeap) Less(i, j int) bool {
 	if h.isMin {
-		return h.prices[i] < h.prices[j] // Min-Heap logic: Smallest values sit at index 0
+		return h.prices[i] < h.prices[j] // Min-Heap logic
 	}
-	return h.prices[i] > h.prices[j] // Max-Heap logic: Largest values sit at index 0
+	return h.prices[i] > h.prices[j] // Max-Heap logic
 }
 
 // ============================================================================
@@ -115,7 +109,7 @@ func NewOrderBook() *OrderBook {
 	}
 }
 
-// getBestAsk safely pulls the current top ask price point in O(1) constant time.
+// Internal unexported helper methods for inside the package
 func (ob *OrderBook) getBestAsk() uint64 {
 	if ob.AskHeap.Len() == 0 {
 		return 0
@@ -123,7 +117,6 @@ func (ob *OrderBook) getBestAsk() uint64 {
 	return ob.AskHeap.prices[0]
 }
 
-// getBestBid safely pulls the current top bid price point in O(1) constant time.
 func (ob *OrderBook) getBestBid() uint64 {
 	if ob.BidHeap.Len() == 0 {
 		return 0
@@ -131,17 +124,27 @@ func (ob *OrderBook) getBestBid() uint64 {
 	return ob.BidHeap.prices[0]
 }
 
+// PUBLIC GATEWAY EXPORTED METHODS (Uppercase for cross-package access)
+
+// GetBestAsk is the public gateway for outside packages to read the best ask.
+func (ob *OrderBook) GetBestAsk() uint64 {
+	return ob.getBestAsk()
+}
+
+// GetBestBid is the public gateway for outside packages to read the best bid.
+func (ob *OrderBook) GetBestBid() uint64 {
+	return ob.getBestBid()
+}
+
 // ============================================================================
 // 4. PRICE-TIME ENGINE LOOP EXECUTION
 // ============================================================================
 
-// ProcessOrder scales through the opposing side's queue to fill an inbound transaction,
-// instantly flushing depleted levels and managing remainder shelf operations.
+// ProcessOrder scales through the opposing side's queue to fill an inbound transaction.
 func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 	var trades []*TradeExecution
 
 	if incoming.IsBuy {
-		// Look across the spread to match with active sellers
 		for incoming.Quantity > 0 && ob.AskHeap.Len() > 0 && incoming.Price >= ob.getBestAsk() {
 			bestAskPrice := ob.getBestAsk()
 			askLevel := ob.Asks[bestAskPrice]
@@ -150,7 +153,6 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 			for currentNode != nil && incoming.Quantity > 0 {
 				restingOrder := currentNode.Value
 
-				// Calculate maximum available filling volume
 				matchQty := incoming.Quantity
 				if restingOrder.Quantity < matchQty {
 					matchQty = restingOrder.Quantity
@@ -167,7 +169,6 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 					Symbol:      incoming.Symbol,
 				})
 
-				// Pop completed order node completely out of the linked chain boundary
 				if restingOrder.Quantity == 0 {
 					askLevel.Head = currentNode.Next
 					if askLevel.Head != nil {
@@ -179,14 +180,12 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 				currentNode = askLevel.Head
 			}
 
-			// If the price layer is fully drained, clean the Map index and pop the Heap tree node
 			if askLevel.Head == nil {
 				delete(ob.Asks, bestAskPrice)
-				heap.Pop(ob.AskHeap) // Next best ask instantly bubbles to the top in O(log M)
+				heap.Pop(ob.AskHeap)
 			}
 		}
 
-		// If shares remain unfilled, shelf the order in our resting Bid Book
 		if incoming.Quantity > 0 {
 			shelf, exists := ob.Bids[incoming.Price]
 			if !exists {
@@ -198,7 +197,6 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 		}
 
 	} else {
-		// Incoming Sell Order matches with resting active buyers
 		for incoming.Quantity > 0 && ob.BidHeap.Len() > 0 && incoming.Price <= ob.getBestBid() {
 			bestBidPrice := ob.getBestBid()
 			bidLevel := ob.Bids[bestBidPrice]
@@ -236,11 +234,10 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 
 			if bidLevel.Head == nil {
 				delete(ob.Bids, bestBidPrice)
-				heap.Pop(ob.BidHeap) // Next best bid instantly bubbles to the top in O(log M)
+				heap.Pop(ob.BidHeap)
 			}
 		}
 
-		// If shares remain unfilled, shelf the order in our resting Ask Book
 		if incoming.Quantity > 0 {
 			shelf, exists := ob.Asks[incoming.Price]
 			if !exists {
@@ -259,19 +256,16 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 // 5. THE MULTI-ASSET EXCHANGE REGISTRY
 // ============================================================================
 
-// Exchange acts as the top-level supervisor tracking separate books for each stock symbol.
 type Exchange struct {
-	Books map[[4]byte]*OrderBook // Maps a 4-byte ticker identifier to its isolated book space
+	Books map[[4]byte]*OrderBook
 }
 
-// NewExchange allocates memory and returns a functional multi-asset engine space.
 func NewExchange() *Exchange {
 	return &Exchange{
 		Books: make(map[[4]byte]*OrderBook),
 	}
 }
 
-// ProcessOrder handles routing an incoming order to its correct isolated stock room.
 func (e *Exchange) ProcessOrder(incoming *Order) []*TradeExecution {
 	book, exists := e.Books[incoming.Symbol]
 	if !exists {
