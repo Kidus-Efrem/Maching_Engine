@@ -253,20 +253,30 @@ func (ob *OrderBook) ProcessOrder(incoming *Order) []*TradeExecution {
 }
 
 // ============================================================================
-// 5. THE MULTI-ASSET EXCHANGE REGISTRY
+// 5. THE MULTI-ASSET EXCHANGE REGISTRY (UPDATED WITH WAL)
 // ============================================================================
 
 type Exchange struct {
 	Books map[[4]byte]*OrderBook
+	Wal   *WAL // Our persistence channel
 }
 
-func NewExchange() *Exchange {
+func NewExchange(walInstance *WAL) *Exchange {
 	return &Exchange{
 		Books: make(map[[4]byte]*OrderBook),
+		Wal:   walInstance,
 	}
 }
 
 func (e *Exchange) ProcessOrder(incoming *Order) []*TradeExecution {
+	// CRITICAL SYSTEM CORE: Log the intent to disk BEFORE modifying RAM books!
+	if e.Wal != nil {
+		if err := e.Wal.WriteOrder(incoming); err != nil {
+			// System fault panic if storage media becomes corrupted or unwritable
+			panic("WAL CRITICAL FAILURE: Unable to persist transaction state: " + err.Error())
+		}
+	}
+
 	book, exists := e.Books[incoming.Symbol]
 	if !exists {
 		book = NewOrderBook()
