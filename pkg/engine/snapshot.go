@@ -6,7 +6,6 @@ import (
 	"os"
 )
 
-// SnapshotEngine handles freezing and rehydrating the OrderBook states.
 type SnapshotEngine struct {
 	SnapshotPath string
 }
@@ -15,86 +14,117 @@ func NewSnapshotEngine(path string) *SnapshotEngine {
 	return &SnapshotEngine{SnapshotPath: path}
 }
 
-// SaveSnapshot serializes the current OrderBook data structure directly to disk.
-func (se *SnapshotEngine) SaveSnapshot(book *OrderBook) error {
+// SaveExchangeSnapshot freezes the global multi-ticker exchange state to disk
+func (se *SnapshotEngine) SaveExchangeSnapshot(exchange *Exchange) error {
 	file, err := os.OpenFile(se.SnapshotPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// 1. Write the total number of tracking entries inside our OrdersRegistry
-	registrySize := uint64(len(book.OrdersRegistry))
-	if err := binary.Write(file, binary.BigEndian, registrySize); err != nil {
+	// 1. Write how many unique asset ticker books currently exist in the exchange
+	bookCount := uint32(len(exchange.Books))
+	if err := binary.Write(file, binary.BigEndian, bookCount); err != nil {
 		return err
 	}
 
-	// 2. Iterate through the registry map and dump every order's raw fields
-	var buf [21]byte
-	for _, node := range book.OrdersRegistry {
-		order := node.Value
-		binary.BigEndian.PutUint64(buf[0:8], order.ID)
-		copy(buf[8:12], order.Symbol[:])
-		binary.BigEndian.PutUint64(buf[12:20], order.Price)
-		if order.IsBuy {
-			buf[20] = 1
-		} else {
-			buf[20] = 0
+	// 2. Loop through every asset ticker book (e.g., AAPL, MSFT)
+	for symbol, book := range exchange.Books {
+		// Write the 4-byte ticker key frame first so we know which book this belongs to
+		if _, err := file.Write(symbol[:]); err != nil {
+			return err
 		}
 
-		// Also serialize the current remaining quantity of the order
-		// We write this separately so we know exactly how much volume was left unfilled!
-		if _, err := file.Write(buf[:]); err != nil {
+		// Write how many active orders live inside this specific ticker's registry
+		registrySize := uint64(len(book.OrdersRegistry))
+		if err := binary.Write(file, binary.BigEndian, registrySize); err != nil {
 			return err
 		}
-		if err := binary.Write(file, binary.BigEndian, order.Quantity); err != nil {
-			return err
+
+		// Dump every single order belonging to this symbol block
+		var buf [21]byte
+		for _, node := range book.OrdersRegistry {
+			order := node.Value
+			binary.BigEndian.PutUint64(buf[0:8], order.ID)
+			copy(buf[8:12], order.Symbol[:])
+			binary.BigEndian.PutUint64(buf[12:20], order.Price)
+			if order.IsBuy {
+				buf[20] = 1
+			} else {
+				buf[20] = 0
+			}
+
+			if _, err := file.Write(buf[:]); err != nil {
+				return err
+			}
+			if err := binary.Write(file, binary.BigEndian, order.Quantity); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-// LoadSnapshot reads the snapshot file and rehydrates a pristine OrderBook memory layer.
-func (se *SnapshotEngine) LoadSnapshot() (*OrderBook, error) {
+// LoadExchangeSnapshot completely rehydrates a full multi-asset Exchange platform
+func (se *SnapshotEngine) LoadExchangeSnapshot() (*Exchange, error) {
 	file, err := os.Open(se.SnapshotPath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	book := NewOrderBook()
+	// Create a fresh, pristine global exchange registry container
+	exchange := NewExchange(nil, nil)
 
-	// 1. Read the total number of records we need to parse
-	var registrySize uint64
-	if err := binary.Read(file, binary.BigEndian, &registrySize); err != nil {
+	// 1. Read how many separate asset ticker books we need to parse out of the stream
+	var bookCount uint32
+	if err := binary.Read(file, binary.BigEndian, &bookCount); err != nil {
 		return nil, err
 	}
 
-	// 2. Rehydrate each individual order entry back into our Heaps and Maps
+	// 2. Loop through each asset block segment
 	buf := make([]byte, 21)
-	for i := uint64(0); i < registrySize; i++ {
-		_, err := io.ReadFull(file, buf)
-		if err != nil {
+	for b := uint32(0); b < bookCount; b++ {
+		var symbol [4]byte
+		if _, err := io.ReadFull(file, symbol[:]); err != nil {
 			return nil, err
 		}
 
-		order := &Order{
-			ID:    binary.BigEndian.Uint64(buf[0:8]),
-			Price: binary.BigEndian.Uint64(buf[12:20]),
-			IsBuy: buf[20] == 1,
-		}
-		copy(order.Symbol[:], buf[8:12])
+		// Initialize an isolated book room for this specific symbol inside the registry
+		book := NewOrderBook()
+		exchange.Books[symbol] = book
 
-		var quantity uint32
-		if err := binary.Read(file, binary.BigEndian, &quantity); err != nil {
+		// Read how many orders are packed inside this symbol room block
+		var registrySize uint64
+		if err := binary.Read(file, binary.BigEndian, &registrySize); err != nil {
 			return nil, err
 		}
-		order.Quantity = quantity
 
-		// Force place this order back into our live map/heap queues
-		book.ProcessOrder(order)
+		// Parse and inject each order back to its isolated asset space
+		for i := uint64(0); i < registrySize; i++ {
+			_, err := io.ReadFull(file, buf)
+			if err != nil {
+				return nil, err
+			}
+
+			order := &Order{
+				ID:    binary.BigEndian.Uint64(buf[0:8]),
+				Price: binary.BigEndian.Uint64(buf[12:20]),
+				IsBuy: buf[20] == 1,
+			}
+			copy(order.Symbol[:], buf[8:12])
+
+			var quantity uint32
+			if err := binary.Read(file, binary.BigEndian, &quantity); err != nil {
+				return nil, err
+			}
+			order.Quantity = quantity
+
+			// Process this order *directly* inside its specific symbol room
+			book.ProcessOrder(order)
+		}
 	}
 
-	return book, nil
+	return exchange, nil
 }
