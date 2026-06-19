@@ -7,8 +7,8 @@ import (
 	"os"
 )
 
-// Const defining our fixed binary record footprint (8 + 4 + 8 + 1 = 21 bytes)
-const OrderRecordSize = 21
+// Const defining our fixed binary record footprint (8 + 4 + 8 + 1 + 4 = 25 bytes)
+const OrderRecordSize = 25
 
 // WAL manages our low-level append-only file descriptor interface.
 type WAL struct {
@@ -30,21 +30,24 @@ func (w *WAL) Close() error {
 	return w.file.Close()
 }
 
-// WriteOrder serializes an order structure directly into a tight 21-byte block.
+// WriteOrder serializes an order structure directly into a tight 25-byte block.
 func (w *WAL) WriteOrder(order *Order) error {
 	var buf [OrderRecordSize]byte
 
-	// Bit-pack the fields directly sequentially into the byte array buffer
+	// Bit-pack the fields sequentially into the byte array buffer
 	binary.BigEndian.PutUint64(buf[0:8], order.ID)
 	copy(buf[8:12], order.Symbol[:])
 	binary.BigEndian.PutUint64(buf[12:20], order.Price)
 
-	// Encode the boolean field into bit 0 of the final byte frame
+	// Encode the boolean field into bit 0 of the 21st byte frame
 	if order.IsBuy {
 		buf[20] = 1
 	} else {
 		buf[20] = 0
 	}
+
+	// Pack the 4-byte Quantity into the final slots
+	binary.BigEndian.PutUint32(buf[21:25], order.Quantity)
 
 	// Direct append write system call
 	_, err := w.file.Write(buf[:])
@@ -73,9 +76,10 @@ func (w *WAL) ReadAll() ([]*Order, error) {
 
 		// Rehydrate our Order struct out of raw binary streams
 		order := &Order{
-			ID:    binary.BigEndian.Uint64(buf[0:8]),
-			Price: binary.BigEndian.Uint64(buf[12:20]),
-			IsBuy: buf[20] == 1,
+			ID:       binary.BigEndian.Uint64(buf[0:8]),
+			Price:    binary.BigEndian.Uint64(buf[12:20]),
+			IsBuy:    buf[20] == 1,
+			Quantity: binary.BigEndian.Uint32(buf[21:25]), // Fixed: Rehydrating volume
 		}
 		copy(order.Symbol[:], buf[8:12])
 
