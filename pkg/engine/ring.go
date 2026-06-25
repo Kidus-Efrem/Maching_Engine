@@ -14,8 +14,14 @@ type RingEntry struct {
 }
 
 type RingBuffer struct {
-	buffer           [BufferSize]RingEntry
+buffer           [BufferSize]RingEntry
+
+	// Add 56 bytes of padding before the producer sequence (8 + 56 = 64 bytes)
+	_                [56]byte
 	producerSequence uint64
+
+	// Add 56 bytes of padding before the consumer sequence (8 + 56 = 64 bytes)
+	_                [56]byte
 	consumerSequence uint64
 }
 
