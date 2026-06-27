@@ -52,3 +52,75 @@ func UnmarshalOrder(data []byte) (engine.Order, uint64, error) {
 
 	return order, accountID, nil
 }
+// Append this to your existing pkg/network/server.go file:
+
+import (
+	"io"
+	"log"
+	"net"
+)
+
+type TCPServer struct {
+	listenAddr string
+	ring       *engine.RingBuffer
+}
+
+func NewTCPServer(listenAddr string, ring *engine.RingBuffer) *TCPServer {
+	return &TCPServer{
+		listenAddr: listenAddr,
+		ring:       ring,
+	}
+}
+
+// Start opens the socket gateway and kicks off the concurrent connection accept loop
+func (s *TCPServer) Start() error {
+	listener, err := net.Listen("tcp", s.listenAddr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	log.Printf("[SERVER] FIX-lite TCP Gateway humming on %s\n", s.listenAddr)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("[SERVER] Connection drop error: %v\n", err)
+			continue
+		}
+
+		// Handle each connection concurrently in its own green-thread context
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *TCPServer) handleConnection(conn net.Conn) {
+	defer conn.Close()
+	log.Printf("[SERVER] Client connected: %s\n", conn.RemoteAddr().String())
+
+	// A fixed-width reusable buffer frame for this thread's connection lifecycle
+	buf := make([]byte, PacketSize)
+
+	for {
+		// ReadFull guarantees we block until we pull exactly 34 bytes off the wire
+		_, err := io.ReadFull(conn, buf)
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				log.Printf("[SERVER] Client disconnected: %s\n", conn.RemoteAddr().String())
+				return
+			}
+			log.Printf("[SERVER] Read stream failure: %v\n", err)
+			return
+		}
+
+		// Decode the packet without allocation
+		order, accountID, err := UnmarshalOrder(buf)
+		if err != nil {
+			log.Printf("[SERVER] Protocol violation: %v\n", err)
+			continue // Drain packet bad signature, keep connection alive
+		}
+
+		// Fire it directly down the atomic ingestion channel pipeline!
+		s.ring.Enqueue(order, accountID)
+	}
+}
