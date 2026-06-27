@@ -1,13 +1,29 @@
 package network
 
 import (
+	// "binary"
 	"encoding/binary"
 	"errors"
+	"io"
+	"log"
 	"matching-engine/pkg/engine"
+	"net"
 )
 
 // PacketSize defines our strict 33-byte protocol layout boundary
 const PacketSize = 34 // 1 + 8 + 8 + 4 + 8 + 4 + 1
+
+type TCPServer struct {
+	listenAddr string
+	ring       *engine.RingBuffer
+}
+
+func NewTCPServer(listenAddr string, ring *engine.RingBuffer) *TCPServer {
+	return &TCPServer{
+		listenAddr: listenAddr,
+		ring:       ring,
+	}
+}
 
 // UnmarshalOrder decodes a raw 34-byte slice directly into an Engine Order struct
 // without causing any dynamic memory allocations on the heap.
@@ -51,25 +67,6 @@ func UnmarshalOrder(data []byte) (engine.Order, uint64, error) {
 	}
 
 	return order, accountID, nil
-}
-// Append this to your existing pkg/network/server.go file:
-
-import (
-	"io"
-	"log"
-	"net"
-)
-
-type TCPServer struct {
-	listenAddr string
-	ring       *engine.RingBuffer
-}
-
-func NewTCPServer(listenAddr string, ring *engine.RingBuffer) *TCPServer {
-	return &TCPServer{
-		listenAddr: listenAddr,
-		ring:       ring,
-	}
 }
 
 // Start opens the socket gateway and kicks off the concurrent connection accept loop
